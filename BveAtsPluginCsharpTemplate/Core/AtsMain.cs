@@ -209,35 +209,41 @@ namespace AtsPlugin.Core
         }
 
 
-        // 同名大丈夫？？
+        #region BVE標準
+        /// <summary>ユーザーの入力した力行ノッチ段数</summary>
         public static int userPower = 0;
+        /// <summary>ユーザーの入力したブレーキノッチ段数</summary>
         public static int userBrake = 0;
+        /// <summary>ユーザーの入力したレバーサー方向</summary>
         public static int userReverser = 0;
         public static float g_speed = 0;
         public static int g_time = 0;
         public static int DeltaT = 0;
-        private static int Delay;
-        private static int Lag;
-        private static int Reflesh;
+        #endregion
+
+        #region 設定
+        /// <summary>設定による力行ノッチインデックス</summary>
         private static int PowerIndex;
+        /// <summary>設定によるブレーキノッチインデックス</summary>
         private static int BrakeIndex;
+        /// <summary>設定によるレバーサーインデックス</summary>
         private static int ReverserIndex;
-        private static int[] outPower = new int[10000];
-        private static int[] outBrake = new int[10000];
-        private static int[] outReverser = new int[10000];
-        private static int[] PowerTime = new int[10000];
-        private static int[] BrakeTime = new int[10000];
-        private static int[] ReverserTime = new int[10000];
-        private static int PowerNum;
-        private static int BrakeNum;
-        private static int ReverserNum;
-        private static int outputPower;
-        private static int outputBrake;
-        private static int outputReverser2;
-        private static int outputPower2;
-        private static int outputBrake2;
-        private static int outputReverser;
-        //public static HashSet<AtsKey> userKey = new HashSet<AtsKey>();
+        #endregion
+
+        #region 遅延処理インスタンス
+        private static LagDelayProcessor _speedDisp = new LagDelayProcessor();
+        private static LagDelayProcessor _panelSelector = new LagDelayProcessor();
+        private static LagDelayProcessor _bcPressure = new LagDelayProcessor();
+
+        /// <summary>ブレーキノッチ段数ラグ</summary>
+        private static LagDelayProcessor _brake = new LagDelayProcessor();
+        /// <summary>力行ノッチ段数ラグ</summary>
+        private static LagDelayProcessor _power = new LagDelayProcessor();
+        /// <summary>レバーサーラグ</summary>
+        private static LagDelayProcessor _reverser = new LagDelayProcessor();
+        /// <summary>Custom1-6用</summary>
+        private static LagDelayProcessor[] _pCustoms = new LagDelayProcessor[6];
+        #endregion
 
         /// <summary>
         /// Called when this plug-in is loaded
@@ -245,13 +251,18 @@ namespace AtsPlugin.Core
         [DllExport(CallingConvention.StdCall)]
         public static void Load()
         {
-            AtsPlugin.Config.Config.Init();
+            // XML設定の読み込み
+            //AtsPlugin.Config.Config.Init();
             AtsPlugin.Config.Config.Load(Path.Combine(AtsPlugin.Config.Config.PluginDir, "NotchDelay.xml"));
-            Delay = Math.Abs(AtsPlugin.Config.Config.Delay);
-            Lag = Math.Abs((AtsPlugin.Config.Config.Lag));
-            BrakeIndex = AtsPlugin.Config.Config.Brake;
-            PowerIndex = AtsPlugin.Config.Config.Power;
-            ReverserIndex = AtsPlugin.Config.Config.Reverser;
+            BrakeIndex = AtsPlugin.Config.Config.BrakePanel;
+            PowerIndex = AtsPlugin.Config.Config.PowerPanel;
+            ReverserIndex = AtsPlugin.Config.Config.ReverserPanel;
+
+            // Custom用プロセッサの配列を初期化
+            for (int i = 0; i < _pCustoms.Length; i++)
+            {
+                _pCustoms[i] = new LagDelayProcessor();
+            }
         }
 
         /// <summary>
@@ -291,10 +302,14 @@ namespace AtsPlugin.Core
         public static void Initialize(int initialHandlePosition)
         {
             g_speed = 0;
-            PowerNum = 0;
-            BrakeNum = 0;
-            ReverserNum = 0;
-            Reflesh = -1;
+
+            _brake.Reset();
+            _power.Reset();
+            _reverser.Reset();
+            foreach (var p in _pCustoms)
+            {
+                p.Reset();
+            }
         }
 
         /// <summary>
@@ -313,50 +328,86 @@ namespace AtsPlugin.Core
             g_time = vehicleState.Time;
             g_speed = vehicleState.Speed;
 
-            //PowerNum+1のデータから始めてPowerNumのデータを最後に行う
-            for (int i = 0; i < 9999; ++i)
-            {
-                if (PowerTime[NumConvert(i, 0)] != 0 && PowerTime[NumConvert(i, 0)] < g_time)
-                    outputPower = outPower[NumConvert(i, 0)];
-            }
-            for (int i = 0; i < 9999; ++i)
-            {
-                if (BrakeTime[NumConvert(i, 1)] != 0 && BrakeTime[NumConvert(i, 1)] < g_time)
-                    outputBrake = outBrake[NumConvert(i, 1)];
-            }
-            for (int i = 0; i < 9999; ++i)
-            {
-                if (ReverserTime[NumConvert(i, 10000)] != 0 && ReverserTime[NumConvert(i, 10000)] < g_time)
-                    outputReverser = outReverser[NumConvert(i, 1)];
-            }
+            int speed = (int)vehicleState.Speed;
 
-            if (g_time > Reflesh || Reflesh == -1)
-            {
-                outputBrake2 = outputBrake;
-                outputPower2 = outputPower;
-                outputReverser2 = outputReverser;
-                Reflesh = g_time + Lag;
-            }
+            // --- 1. 標準ノッチのラグ処理 --
+            if (BrakeIndex >= 0) { panelArray[BrakeIndex] = _brake.Process(userBrake, g_time, Config.Config.DefaultDelay, Config.Config.DefaultLag, Config.Config.DefaultJitter); }
+            if (PowerIndex >= 0) { panelArray[PowerIndex] = _power.Process(userPower, g_time, Config.Config.DefaultDelay, Config.Config.DefaultLag, Config.Config.DefaultJitter) + AtsPlugin.Config.Config.HbkBrake; }
+            if (ReverserIndex >= 0) { panelArray[ReverserIndex] = _reverser.Process(userReverser, g_time, Config.Config.DefaultDelay, Config.Config.DefaultLag, Config.Config.DefaultJitter); }
 
-            if(true)
+            // --- 2. Custom項目のラグ処理 (1～6) ---
+            for (int i = 0; i < 6; i++)
             {
-                if (BrakeIndex >= 0) { panelArray[BrakeIndex] = outputBrake2; }
-                if (PowerIndex >= 0) { panelArray[PowerIndex] = outputPower2 + AtsPlugin.Config.Config.Hbk; }
-                if (ReverserIndex >= 0) { panelArray[ReverserIndex] = outputReverser2 + 1; }
+                var setting = Config.Config.CustomSettings[i];
+
+                // パネル番号が有効(0～)な場合のみ実行
+                if (setting.PanelIndex >= 0 && setting.PanelIndex < 256)
+                {
+                    // 現在のパネル値を「入力」として読み取り、ラグを付けて「同じ場所」に書き戻す
+                    // これにより、先行する他プラグインの出力値に対して後付けでラグを付与できる
+                    int currentValue = panelArray[setting.PanelIndex];
+                    panelArray[setting.PanelIndex] = _pCustoms[i].Process(currentValue, g_time, setting.Delay, setting.Lag, setting.Jitter);
+                }
             }
 
             return new AtsHandles() { Power = userPower, Brake = userBrake, ConstantSpeed = AtsCscInstruction.Continue, Reverser = userReverser };
         }
 
-        //num=0,PowerNum=6の時は7を出力、num=9999,PowerNum=6の時は6を出力
-        private static int NumConvert(int num, int option)
+        public class LagDelayProcessor
         {
-            if (option <= 0)
-                return (num + PowerNum + 2) % 10000;
-            else if (option >= 10000)
-                return (num + ReverserNum + 2) % 10000;
-            else
-                return (num + BrakeNum + 2) % 10000;
+            private int[] _valueHistory = new int[1000];
+            private int[] _timeHistory = new int[1000];
+            private int _writePtr = 0;
+            private int _lastInputValue = -999;
+            private int _bufferedValue;
+            private int _outputValue;
+            private int _nextRefreshTime = -1;
+
+            // 初期化・リセット用の関数
+            public void Reset()
+            {
+                System.Array.Clear(_valueHistory, 0, _valueHistory.Length);
+                System.Array.Clear(_timeHistory, 0, _timeHistory.Length);
+                _writePtr = 0;
+                _lastInputValue = -999;
+                _bufferedValue = 0;
+                _outputValue = 0;
+                _nextRefreshTime = -1;
+            }
+
+            // inputID: 現在点灯しているパネル番号などの「状態ID」
+            public int Process(int inputID, int currentTime, int delay, int lag, int jitter)
+            {
+                // 状態（ID）が変わった瞬間だけ記録
+                if (inputID != _lastInputValue)
+                {
+                    _writePtr = (_writePtr + 1) % 1000;
+                    _valueHistory[_writePtr] = inputID;
+                    _timeHistory[_writePtr] = currentTime + delay;
+                    _lastInputValue = inputID;
+                }
+
+                // Delay: 予約時刻を過ぎた最新の状態を探す
+                for (int i = 0; i < 1000; i++)
+                {
+                    if (_timeHistory[i] != 0 && _timeHistory[i] <= currentTime)
+                    {
+                        _bufferedValue = _valueHistory[i];
+                    }
+                }
+
+                // Lag: 指定周期ごとに表示を確定させる
+                if (currentTime >= _nextRefreshTime || _nextRefreshTime == -1)
+                {
+                    _outputValue = _bufferedValue;
+
+                    // 次回の更新時刻を「基本Lag + 時刻依存のゆらぎ」で決定する
+                    // jitterが50なら、0〜50msの範囲でランダムに遅れる
+                    int currentJitter = (jitter > 0) ? (currentTime % jitter) : 0;
+                    _nextRefreshTime = currentTime + lag + currentJitter;
+                }
+                return _outputValue;
+            }
         }
 
         /// <summary>
@@ -367,10 +418,6 @@ namespace AtsPlugin.Core
         public static void SetPower(int handlePosition)
         {
             userPower = handlePosition;
-            PowerNum += 1;
-            if (PowerNum == 10000) { PowerNum = 0; }
-            outPower[PowerNum] = handlePosition;
-            PowerTime[PowerNum] = g_time + Delay;
         }
 
         /// <summary>
@@ -381,10 +428,6 @@ namespace AtsPlugin.Core
         public static void SetBrake(int handlePosition)
         {
             userBrake = handlePosition;
-            BrakeNum += 1;
-            if(BrakeNum == 10000) { BrakeNum = 0; }
-            outBrake[BrakeNum] = handlePosition;
-            BrakeTime[BrakeNum] = g_time + Delay;
         }
 
         /// <summary>
@@ -395,10 +438,6 @@ namespace AtsPlugin.Core
         public static void SetReverser(int handlePosition)
         {
             userReverser = handlePosition;
-            ReverserNum += 1;
-            if (ReverserNum == 10000) { ReverserNum = 0; }
-            outReverser[ReverserNum] = handlePosition;
-            ReverserTime[ReverserNum] = g_time + Delay;
         }
 
         /// <summary>

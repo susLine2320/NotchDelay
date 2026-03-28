@@ -8,23 +8,40 @@ using System.Xml.Linq;
 
 namespace AtsPlugin.Config
 {
+
+    /// <summary>
+    /// プロセッサ一個あたりの設定を保持する構造体
+    /// </summary>
+    public struct ProcessorSetting
+    {
+        public int PanelIndex; // 出力先のATSパネル番号
+        public int Delay;      // 応答遅延時間 (ms)
+        public int Lag;        // 更新周期 (ms)
+        public int Jitter;     // ゆらぎ幅 (ms)
+    }
+
     public static class Config
     {
+        /// <summary>プラグインの実行ディレクトリパス</summary>
         public static string PluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        public static int Power = 216;
-        public static int Brake = 215;
-        public static int Reverser = -1;
-        public static int Hbk = 0;
-        public static int Delay = 750;
-        public static int Lag = 100;
 
-        public static void Init()
-        {
-            Power = 216;
-            Brake = 215;
-            Delay = 750;
-            Lag = 100;
-        }
+        #region デフォルト設定値
+        /// <summary>設定による力行ノッチインデックス</summary>
+        public static int PowerPanel = 216;
+        /// <summary>設定によるブレーキノッチインデックス</summary>
+        public static int BrakePanel = 215;
+        /// <summary>設定によるレバーサーインデックス</summary>
+        public static int ReverserPanel = -1;
+        public static int HbkBrake = 0;
+        public static int DefaultDelay = 750;
+        public static int DefaultLag = 100;
+        public static int DefaultJitter = 0;
+
+        /// <summary>任意パネルラグ項目のインデックス (負数は無効)</summary>
+        public static ProcessorSetting[] CustomSettings = new ProcessorSetting[6];
+        #endregion
+
+
         /*
         private static void Cfg(this Dictionary<string, string> configDict, string key, ref double param)
         {
@@ -82,75 +99,75 @@ namespace AtsPlugin.Config
         */
         public static void Load(string path)
         {
+            // ファイルが存在しない場合はデフォルト値で動作を継続
             if (!File.Exists(path)) return;
 
-
-            var table = XDocument.Load(path).Element("NotchDelay");
-            if(table == null) return;
-            // Coreセクション
-            var row = table.Element("Core");
-            if (row != null)
+            try
             {
-                var row11 = row.Element("Delay");
-                if(row11 != null)
-                    Delay = int.Parse(row11.Value);
-                
-                var row12 = row.Element("Lag");
-                if (row12 != null)
-                    Lag = int.Parse(row12.Value);
+                XElement root = XDocument.Load(path).Element("NotchDelay");
+                if (root == null) return;
 
-                var row13 = row.Element("HbkNotch");
-                if (row13 != null)
-                    Hbk = int.Parse(row13.Value);
-            }
+                XElement core = root.Element("Core");
+                XElement panel = root.Element("Panel");
 
-            // Panelセクション
-            var row2 = table.Element("Panel");
-            if (row2 != null)
-            {
-                var row11 = row2.Element("Power");
-                if (row11 != null)
-                    Power = int.Parse(row11.Value);
-
-                var row12 = row2.Element("Brake");
-                if (row12 != null)
-                    Brake = int.Parse(row12.Value);
-
-                var row13 = row2.Element("Reverser");
-                if (row13 != null)
-                    Reverser = int.Parse(row13.Value);
-            }
-            /*
-            //Mainセクション
-            var row3 = table.Element("Main");
-            if (row3 != null)
-            {
-                var row11 = row3.Element("MasconKey");
-                if (row11 != null)
-                    Key = Int32.Parse(row11.Value);
-            }
-
-            /*
-            var dict = new Dictionary<string, string>();
-            StreamReader configFile = File.OpenText(path);
-            string line;
-            while ((line = configFile.ReadLine()) != null)
-            {
-                line = line.Trim();
-                if (line.Length > 0 && line[0] != '#')
+                // --- 1. Coreセクションの読み込み (挙動・数値の設定) ---
+                if (core != null)
                 {
-                    string[] commentTokens = line.Split('#');
-                    string[] tokens = commentTokens[0].Trim().Split('=');
-                    dict.Add(tokens[0].Trim().ToLowerInvariant(), tokens[1].Trim());
+                    // 全体共通のデフォルト挙動
+                    DefaultDelay = GetInt(core, "DefaultDelay", 500);
+                    DefaultLag = GetInt(core, "DefaultLag", 100);
+                    DefaultJitter = GetInt(core, "DefaultJitter", 0);
+
+                    // 計算に使用する数値 (抑速ブレーキ等のオフセット)
+                    HbkBrake = GetInt(core, "HbkBrake", 0);
+                }
+
+                // --- 2. Panelセクションの読み込み (出力先の割り当て) ---
+                if (panel != null)
+                {
+                    PowerPanel = GetInt(panel, "Power", 216);
+                    BrakePanel = GetInt(panel, "Brake", 215);
+                    ReverserPanel = GetInt(panel, "Reverser", -1);
+
+                    // --- 3. Custom項目の統合読み込み (1～6) ---
+                    for (int i = 0; i < 6; i++)
+                    {
+                        string name = "Custom" + (i + 1);
+
+                        // Panelセクションから「出力先番号」を取得 (未設定なら-1)
+                        CustomSettings[i].PanelIndex = GetInt(panel, name, -1);
+
+                        // Coreセクションから「個別挙動」を属性として取得
+                        XElement cElement = core?.Element(name);
+
+                        // Core側に個別設定があれば読み込み、なければDefaultを採用
+                        CustomSettings[i].Delay = GetAttrInt(cElement, "Delay", DefaultDelay);
+                        CustomSettings[i].Lag = GetAttrInt(cElement, "Lag", DefaultLag);
+                        CustomSettings[i].Jitter = GetAttrInt(cElement, "Jitter", DefaultJitter);
+                    }
                 }
             }
-            configFile.Close();
-
-            dict.Cfg("autopilot", ref Load_bve_autopilot);
-            dict.Cfg("cscplugin", ref Load_csc_plugin);
-            dict.Cfg("other", ref Load_Other_plugin);
-            dict.Cfg("maxemergencydeceleration", ref EBDec);
-            dict.Cfg("maxservicedeceleration", ref MaxDec);*/
+            catch
+            {   // XMLの記述ミス（文字混入等）があってもプラグインを落とさず、
+                // それまでに読み込めた値、または初期値で安全に動作させる
+            }
         }
+
+        #region XMLパース用ヘルパー
+
+        /// <summary>
+        /// 指定した要素の値を数値として取得します
+        /// </summary>
+        private static int GetInt(XElement p, string name, int def) =>
+            (p?.Element(name) != null && int.TryParse(p.Element(name).Value, out int r)) ? r : def;
+
+        /// <summary>
+        /// 指定した要素の「属性」を数値として取得します
+        /// </summary>
+        private static int GetAttrInt(XElement e, string name, int def) =>
+            (e?.Attribute(name) != null && int.TryParse(e.Attribute(name).Value, out int r)) ? r : def;
+
+        #endregion
+
     }
 }
